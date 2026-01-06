@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ArcheryLens Elite Pro</title>
+    <script async src="https://docs.opencv.org/4.5.4/opencv.js" onload="onOpenCvReady()"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <style>
+        :root { --primary: #e74c3c; --accent: #3498db; --dark: #121212; --card: #1e1e1e; }
+        body { font-family: 'Segoe UI', sans-serif; background: var(--dark); color: white; margin: 0; padding: 0; }
+        .container { padding: 15px; max-width: 600px; margin: auto; }
+        .card { background: var(--card); padding: 20px; border-radius: 15px; margin-bottom: 15px; box-shadow: 0 4px 15px rgba(0,0,0,0.5); }
+        .view { display: none; } .active { display: block; }
+        #camera-wrapper { position: relative; width: 100%; border-radius: 12px; overflow: hidden; background: #000; border: 2px solid #333; }
+        video, canvas { width: 100%; height: auto; display: block; }
+        #overlay { position: absolute; top: 0; left: 0; z-index: 10; }
+        .btn { width: 100%; padding: 16px; border: none; border-radius: 10px; font-weight: bold; cursor: pointer; margin-top: 10px; font-size: 1rem; }
+        .btn-main { background: var(--primary); color: white; }
+        .btn-sec { background: var(--accent); color: white; }
+        #status-top { background: #f1c40f; color: black; text-align: center; padding: 8px; font-weight: bold; font-size: 0.8rem; }
+        .impact-list { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 10px; }
+        input, select { width: 100%; padding: 12px; margin: 8px 0; border-radius: 8px; border: 1px solid #444; background: #2a2a2a; color: white; box-sizing: border-box; }
+    </style>
+</head>
+<body>
+
+<div id="status-top">CARGANDO MOTOR INTELIGENTE...</div>
+
+<div class="container">
+    <div id="setup-view" class="view active">
+        <h2>Configuración de Sesión</h2>
+        <div class="card">
+            <label>Nombre del Arquero</label>
+            <input type="text" id="arquero-nombre" placeholder="Ej: Juan Pérez">
+            
+            <label>Distancia</label>
+            <select id="setup-distancia">
+                <option value="18">18m</option>
+                <option value="40">40m</option>
+                <option value="60">60m</option>
+                <option value="70">70m</option>
+            </select>
+
+            <label>Tipo de Blanco</label>
+            <select id="setup-blanco">
+                <option value="10">10 Zonas (FITA)</option>
+                <option value="6">6 Zonas (Centro)</option>
+                <option value="triple">Triple Spot Vertical</option>
+            </select>
+
+            <label>Flechas por Tanda</label>
+            <select id="setup-flechas">
+                <option value="3">3 Flechas</option>
+                <option value="6" selected>6 Flechas</option>
+            </select>
+
+            <button class="btn btn-main" id="start-btn" disabled onclick="iniciarApp()">ESPERANDO SOFTWARE...</button>
+        </div>
+    </div>
+
+    <div id="camera-view" class="view">
+        <div id="camera-wrapper">
+            <video id="video" autoplay playsinline></video>
+            <canvas id="overlay"></canvas>
+        </div>
+
+        <div id="ui-controls">
+            <button id="btn-vacio" class="btn btn-sec" onclick="capturarVacio()">1. CAPTURAR BLANCO VACÍO</button>
+            <button id="btn-flechas" class="btn btn-main" style="display:none" onclick="capturarTirada()">2. CAPTURAR TANDA</button>
+        </div>
+
+        <div id="confirm-panel" style="display:none" class="card">
+            <h3>Confirmar Puntos</h3>
+            <p><small>Toca los impactos en la foto de arriba para el mapa de calor.</small></p>
+            <div id="puntos-inputs" class="impact-list"></div>
+            <button class="btn btn-sec" onclick="guardarTodo()">CONFIRMAR Y GUARDAR</button>
+            <button class="btn" style="background:#555" onclick="cancelar()">REPETIR FOTO</button>
+        </div>
+        
+        <button class="btn" style="background:#222; margin-top:30px" onclick="exportarPDF()">FINALIZAR Y EXPORTAR PDF</button>
+    </div>
+</div>
+
+<script>
+    let cvReady = false;
+    let matBase = null;
+    let sessionLog = [];
+    let coordsHeatmap = [];
+    let puntosActuales = [];
+    let config = {};
+
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('overlay');
+    const ctx = canvas.getContext('2d');
+
+    function onOpenCvReady() {
+        cvReady = true;
+        document.getElementById('status-top').style.background = "#2ecc71";
+        document.getElementById('status-top').innerText = "MOTOR LISTO - HTTPS ACTIVO";
+        document.getElementById('start-btn').disabled = false;
+        document.getElementById('start-btn').innerText = "INICIAR ENTRENAMIENTO";
+    }
+
+    async function iniciarApp() {
+        config = {
+            nombre: document.getElementById('arquero-nombre').value || "Arquero",
+            distancia: document.getElementById('setup-distancia').value,
+            blanco: document.getElementById('setup-blanco').value,
+            flechas: parseInt(document.getElementById('setup-flechas').value)
+        };
+
+        document.getElementById('setup-view').classList.remove('active');
+        document.getElementById('camera-view').classList.add('active');
+
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ 
+                video: { facingMode: "environment", width: 1280, height: 720 } 
+            });
+            video.srcObject = stream;
+            video.onloadedmetadata = () => {
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+            };
+        } catch (e) {
+            alert("Error de cámara: Asegúrate de estar en HTTPS y dar permisos.");
+        }
+    }
+
+    function capturarVacio() {
+        if (video.videoWidth === 0) {
+            alert("El video no ha cargado aún.");
+            return;
+        }
+        try {
+            matBase = new cv.Mat(video.videoHeight, video.videoWidth, cv.CV_8UC4);
+            let cap = new cv.VideoCapture(video);
+            cap.read(matBase);
+            
+            document.getElementById('btn-vacio').style.display = 'none';
+            document.getElementById('btn-flechas').style.display = 'block';
+            alert("Base guardada. ¡A tirar!");
+        } catch (err) {
+            alert("Error OpenCV: " + err);
+        }
+    }
+
+    function capturarTirada() {
+        // Congelamos la imagen en el canvas
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        document.getElementById('ui-controls').style.display = 'none';
+        document.getElementById('confirm-panel').style.display = 'block';
+        
+        const container = document.getElementById('puntos-inputs');
+        container.innerHTML = "";
+        puntosActuales = Array(config.flechas).fill(0);
+
+        for(let i=0; i<config.flechas; i++) {
+            container.innerHTML += `<div>F${i+1}<input type="number" value="0" min="0" max="10" onchange="actualizarPunto(${i}, this.value)"></div>`;
+        }
+    }
+
+    canvas.addEventListener('click', (e) => {
+        if(document.
